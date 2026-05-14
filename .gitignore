@@ -1,0 +1,19 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+coverage/
+.next/
+out/
+# Package manager lock files (keep only one per project)
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
