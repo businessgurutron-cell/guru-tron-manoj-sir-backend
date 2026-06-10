@@ -1,8 +1,8 @@
 {
-  "name": "smartprep-web",
+  "name": "gurutron-web",
   "version": "1.0.0",
   "private": true,
-  "description": "SmartPrep — NEET/JEE/BOARD exam prep web app (React + Express, Supabase-ready)",
+  "description": "Gurutron — NEET/JEE/BOARD exam prep web app (React + Express, Supabase-ready)",
   "scripts": {
     "install:all": "npm install && npm --prefix backend install && npm --prefix frontend install",
     "dev": "concurrently -n backend,frontend -c blue,green \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",

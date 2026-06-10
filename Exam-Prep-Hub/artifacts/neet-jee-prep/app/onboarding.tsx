@@ -76,7 +76,7 @@ export default function OnboardingScreen() {
             <View style={styles.logoIcon}>
               <Feather name="book-open" size={32} color="#fff" />
             </View>
-            <Text style={styles.appName}>SmartPrep</Text>
+            <Text style={styles.appName}>Gurutron</Text>
             <Text style={styles.tagline}>Master NEET & JEE with AI</Text>
           </View>
 

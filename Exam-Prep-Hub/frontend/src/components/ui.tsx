@@ -48,6 +48,21 @@ const ICON_MAP: Record<string, keyof typeof Icons> = {
   "x": "X",
   "x-circle": "XCircle",
   zap: "Zap",
+  copy: "Copy",
+  share: "Share2",
+  "qr-code": "QrCode",
+  hash: "Hash",
+  "graduation-cap": "GraduationCap",
+  school: "School",
+  sparkles: "Sparkles",
+  phone: "Phone",
+  "user-check": "UserCheck",
+  "user-x": "UserX",
+  "at-sign": "AtSign",
+  mail: "Mail",
+  key: "Key",
+  compass: "Compass",
+  "log-in": "LogIn",
 };
 
 export function Icon({

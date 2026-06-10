@@ -48,7 +48,17 @@ CREATE TABLE papers (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 4. Create questions table (Main structured table with all exam details)
+-- 4. Create pdf_pages table for raw PDF page storage
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+CREATE TABLE IF NOT EXISTS pdf_pages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  pdf_name TEXT NOT NULL,
+  page_number INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 5. Create questions table (Main structured table with all exam details)
 CREATE TABLE questions (
   id TEXT PRIMARY KEY,
   -- Subject classification

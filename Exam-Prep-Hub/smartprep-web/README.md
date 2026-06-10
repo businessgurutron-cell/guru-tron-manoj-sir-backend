@@ -1,4 +1,4 @@
-# SmartPrep — Web (React + Express)
+# Gurutron — Web (React + Express)
 
 NEET / JEE / Board exam prep web app. Ported from the Expo prototype at
 `artifacts/neet-jee-prep/` into a proper full-stack React web app with a
@@ -14,7 +14,7 @@ Supabase-swappable backend.
 ## Folder layout
 
 ```
-smartprep-web/
+gurutron-web/
 ├── client/          # Vite + React frontend (port 5173)
 │   └── src/
 │       ├── pages/          # Onboarding, Home, Quiz, QuizSession, Papers,
@@ -58,11 +58,11 @@ Open `/admin/login` or click **Admin Login** on the onboarding screen.
 Set in `server/.env` (copied from `.env.example`):
 
 ```env
-ADMIN_EMAIL=admin@smartprep.local
+ADMIN_EMAIL=admin@gurutron.local
 ADMIN_PASSWORD=changeme
 ```
 
-Change these before deploying. Login returns a JWT stored in `localStorage` (`smartprep.adminToken`).
+Change these before deploying. Login returns a JWT stored in `localStorage` (`gurutron.adminToken`).
 
 ### PDF parsing
 
@@ -81,7 +81,7 @@ Change these before deploying. Login returns a JWT stored in `localStorage` (`sm
 ## Running locally (Windows)
 
 ```powershell
-# from this folder (smartprep-web/)
+# from this folder (gurutron-web/)
 npm install
 npm --prefix server install
 npm --prefix client install
@@ -98,7 +98,7 @@ to the Express server on port 4000 (see `client/vite.config.ts`).
 ## Data storage
 
 - Each browser gets a generated `userId` stored in `localStorage`
-  (`smartprep.userId`). The client sends it via the `x-user-id` header.
+  (`gurutron.userId`). The client sends it via the `x-user-id` header.
 - The server persists everything to `server/data/db.json` per user id.
 
 ## Switching to Supabase later
