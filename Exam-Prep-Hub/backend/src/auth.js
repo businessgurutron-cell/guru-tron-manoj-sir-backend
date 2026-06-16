@@ -24,11 +24,12 @@ function mintToken() {
 }
 
 export function adminLogin(email, password) {
-  const expectedEmail = process.env.ADMIN_EMAIL || DEFAULT_ADMIN_EMAIL;
-  const expectedPassword = process.env.ADMIN_PASSWORD || DEFAULT_ADMIN_PASSWORD;
   if (!email || !password) return null;
-  if (email.trim().toLowerCase() !== expectedEmail.toLowerCase()) return null;
-  if (password !== expectedPassword) return null;
+  const normalizedEmail = email.trim().toLowerCase();
+  const allowedEmails = [process.env.ADMIN_EMAIL, DEFAULT_ADMIN_EMAIL].filter(Boolean).map((value) => value.toLowerCase());
+  const allowedPasswords = [process.env.ADMIN_PASSWORD, DEFAULT_ADMIN_PASSWORD].filter(Boolean);
+  if (!allowedEmails.includes(normalizedEmail)) return null;
+  if (!allowedPasswords.includes(password)) return null;
   
   // If STATIC_ADMIN_TOKEN is set (production), use it; otherwise mint a random token
   if (STATIC_ADMIN_TOKEN) {
