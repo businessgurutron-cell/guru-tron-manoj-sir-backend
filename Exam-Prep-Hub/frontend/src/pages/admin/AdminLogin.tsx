@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { Icon, Spinner } from "@/components/ui";
 import { adminApi, getAdminToken, setAdminToken } from "@/lib/api";
 
@@ -10,7 +10,16 @@ export default function AdminLogin() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
+  const loc = useLocation();
+
   useEffect(() => {
+    // Prefill email if provided as query param ?e=...
+    try {
+      const qp = new URLSearchParams(loc.search);
+      const e = qp.get("e");
+      if (e) setEmail(e);
+    } catch {}
+
     if (getAdminToken()) {
       (async () => {
         try { await adminApi.me(); nav("/admin", { replace: true }); }
