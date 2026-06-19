@@ -139,6 +139,7 @@ export const jsonStorage = {
     const db = read();
     db.attempts[userId] = [];
     db.papers[userId] = [];
+    db.memberships = (db.memberships || []).filter((membership) => membership.studentId !== userId);
     if (db.users[userId]) {
       db.users[userId] = {
         ...db.users[userId],

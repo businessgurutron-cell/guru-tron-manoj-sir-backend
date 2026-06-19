@@ -194,6 +194,7 @@ export const supabaseStorage = {
     const results = await Promise.all([
       supabase.from("attempts").delete().eq("user_id", userId),
       supabase.from("papers").delete().eq("user_id", userId),
+      supabase.from("memberships").delete().eq("student_id", userId),
       supabase.from("profiles").update(profileReset).eq("id", userId),
     ]);
 
@@ -205,9 +206,24 @@ export const supabaseStorage = {
   },
 
   async getQuestions() {
-    const { data, error } = await supabase.from("questions").select("*");
-    handleError(error);
-    return data ? data.map(toCamelCase) : [];
+    const pageSize = 1000;
+    const allRows = [];
+    let from = 0;
+
+    while (true) {
+      const { data, error } = await supabase
+        .from("questions")
+        .select("*")
+        .range(from, from + pageSize - 1);
+      handleError(error);
+
+      const rows = data || [];
+      allRows.push(...rows);
+      if (rows.length < pageSize) break;
+      from += pageSize;
+    }
+
+    return allRows.map(toCamelCase);
   },
 
   async addQuestions(questions) {

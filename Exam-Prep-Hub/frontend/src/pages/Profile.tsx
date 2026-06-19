@@ -1,13 +1,15 @@
 import { useState } from "react";
 import { Icon } from "@/components/ui";
 import { useApp } from "@/context/AppContext";
+import { useAuth } from "@/context/AuthContext";
 import { colors, examColor, examLight } from "@/lib/colors";
 import type { ExamType } from "@/lib/types";
 
 const EXAM_TYPES: ExamType[] = ["NEET", "JEE", "BOARD"];
 
 export default function Profile() {
-  const { profile, updateProfile, attempts, papers, resetProgress } = useApp();
+  const { profile, updateProfile, attempts, papers, resetProgress, upgradeToTeacher } = useApp();
+  const { logout } = useAuth();
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState(profile.name);
 
@@ -22,6 +24,14 @@ export default function Profile() {
     if (window.confirm("Reset Progress? This will clear all your quiz history and papers.")) {
       resetProgress();
     }
+  };
+
+  const handleBecomeTeacher = async () => {
+    const ok = window.confirm(
+      "Switch to Teacher mode? This will clear your student progress, papers, and memberships, then start a fresh teacher profile."
+    );
+    if (!ok) return;
+    await upgradeToTeacher();
   };
 
   const menuItems = [
@@ -67,6 +77,22 @@ export default function Profile() {
         <div className="px-3 py-1 rounded-2xl" style={{ background: ec + "20" }}>
           <span className="text-[13px] font-semibold" style={{ color: ec }}>{profile.targetExam} Aspirant</span>
         </div>
+        <div className="mt-2 text-[12px] font-semibold" style={{ color: colors.mutedForeground }}>
+          Role: {profile.role === "teacher" ? "Teacher" : "Student"}
+        </div>
+        {profile.role !== "teacher" ? (
+          <button
+            onClick={handleBecomeTeacher}
+            className="mt-3 px-4 py-2 rounded-xl text-sm font-semibold"
+            style={{ background: colors.primary, color: "#fff" }}
+          >
+            Become a Teacher
+          </button>
+        ) : (
+          <div className="mt-3 px-4 py-2 rounded-xl text-sm font-semibold" style={{ background: colors.secondary, color: colors.foreground }}>
+            Teacher mode active
+          </div>
+        )}
       </div>
 
       <div className="flex gap-2 mb-4">
@@ -82,9 +108,6 @@ export default function Profile() {
           </div>
         ))}
       </div>
-
-      {/* Role picker removed \u2014 the app is now student-only. Teacher
-          workflows live in a separate teacher app/build. */}
 
       <div className="rounded-2xl p-4 mb-3 border bg-white shadow-sm" style={{ borderColor: colors.border }}>
         <div className="text-[15px] font-semibold mb-3" style={{ color: colors.foreground }}>Target Exam</div>
@@ -137,6 +160,14 @@ export default function Profile() {
       >
         <Icon name="trash-2" size={16} color={colors.destructive} />
         <span className="text-sm font-semibold" style={{ color: colors.destructive }}>Reset Progress</span>
+      </button>
+      <button
+        onClick={() => logout()}
+        className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl border-[1.5px] bg-white"
+        style={{ borderColor: colors.primary, color: colors.foreground }}
+      >
+        <Icon name="log-out" size={16} color={colors.primary} />
+        <span className="text-sm font-semibold">Logout</span>
       </button>
     </div>
   );

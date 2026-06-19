@@ -8,23 +8,7 @@ interface User {
   role: "student" | "teacher" | "admin";
 }
 
-/**
- * API base URL. In production on Vercel, set `VITE_API_BASE_URL` to the
- * deployed backend origin (e.g. https://api.example.com). Empty in dev.
- */
-function normalizeBaseUrl(raw: string): string {
-  let v = (raw || "").trim().replace(/\/$/, "");
-  if (!v) return "";
-  if (!/^https?:\/\//i.test(v)) v = `https://${v}`;
-  return v;
-}
-const API_BASE_URL: string = normalizeBaseUrl(
-  (import.meta as any).env?.VITE_API_BASE_URL ||
-    (import.meta as any).env?.DEV
-      ? "http://localhost:4000"
-      : ""
-);
-const apiUrl = (p: string) => (p.startsWith("http") ? p : `${API_BASE_URL}${p}`);
+const apiUrl = (p: string) => p;
 
 interface AuthContextType {
   user: User | null;
@@ -32,7 +16,7 @@ interface AuthContextType {
   /** `identifier` may be an email, username, or phone number. */
   login: (identifier: string, password: string) => Promise<void>;
   signup: (email: string, password: string) => Promise<void>;
-  loginWithGoogle: (googleData: any) => Promise<void>;
+  loginWithGoogle: (options: { credential: string }) => Promise<void>;
   logout: () => Promise<void>;
   isAuthenticated: boolean;
 }
@@ -44,23 +28,59 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    checkAuthStatus();
+    let mounted = true;
+
+    const loadSession = async () => {
+      try {
+        const response = await fetch(apiUrl("/auth/me"), {
+          credentials: "include",
+        });
+        if (!mounted) return;
+        if (response.ok) {
+          const data = await response.json();
+          setUser(data);
+        } else {
+          setUser(null);
+        }
+      } catch (error) {
+        if (mounted) {
+          console.error("Auth check failed:", error);
+          setUser(null);
+        }
+      } finally {
+        if (mounted) setIsLoading(false);
+      }
+    };
+
+    void loadSession();
+
+    return () => {
+      mounted = false;
+    };
   }, []);
 
-  const checkAuthStatus = async () => {
-    try {
-      const response = await fetch(apiUrl("/auth/me"), {
-        credentials: "include",
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setUser(data);
+  const syncGoogleUser = async (credential: string) => {
+    const response = await fetch(apiUrl("/auth/google"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ credential }),
+    });
+
+    if (!response.ok) {
+      let errorMessage = "Firebase login failed.";
+      const text = await response.text();
+      try {
+        const errorData = JSON.parse(text);
+        errorMessage = errorData?.error || errorMessage;
+      } catch {
+        if (text) errorMessage = text;
       }
-    } catch (error) {
-      console.error("Auth check failed:", error);
-    } finally {
-      setIsLoading(false);
+      throw new Error(errorMessage);
     }
+
+    const data = await response.json();
+    return data;
   };
 
   const login = async (identifier: string, password: string) => {
@@ -111,27 +131,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(data);
   };
 
-  const loginWithGoogle = async (data: { credential: string }) => {
-    const response = await fetch(apiUrl("/auth/google"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify(data),
-    });
-
-    if (!response.ok) {
-      let errorMessage = "Google login failed.";
-      const text = await response.text();
-      try {
-        const errorData = JSON.parse(text);
-        errorMessage = errorData?.error || errorMessage;
-      } catch {
-        if (text) errorMessage = text;
-      }
-      throw new Error(errorMessage);
+  const loginWithGoogle = async ({ credential }: { credential: string }) => {
+    if (!credential) {
+      throw new Error("Google credential is required.");
     }
 
-    const userData = await response.json();
+    const userData = await syncGoogleUser(credential);
     setUser(userData);
   };
 
@@ -142,7 +147,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         credentials: "include",
       });
       setUser(null);
-      window.location.href = "/login";
+      window.location.href = "/onboarding";
     } catch (error) {
       console.error("Logout failed:", error);
     }

@@ -48,7 +48,7 @@ async function ensureProfile(userId, email, googleData = null) {
 }
 
 // Google OAuth callback
-router.post("/google", async (req, res) => {
+async function handleGoogleSignIn(req, res) {
   try {
     const { credential } = req.body;
     if (!credential) {
@@ -88,7 +88,10 @@ router.post("/google", async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: String(error?.message || error) });
   }
-});
+}
+
+router.post("/google", handleGoogleSignIn);
+router.post("/firebase", handleGoogleSignIn);
 
 // Email/password signup. Password is hashed with scrypt and stored on the
 // profile (`passwordHash` field) so we can verify it on subsequent logins.

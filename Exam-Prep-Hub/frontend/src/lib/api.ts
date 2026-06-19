@@ -14,6 +14,7 @@ import type {
 } from "./types";
 
 const ADMIN_TOKEN_KEY = "gurutron.adminToken";
+const ADMIN_AUTH_EXPIRED_EVENT = "gurutron:admin-auth-expired";
 
 export function getAdminToken(): string | null {
   return localStorage.getItem(ADMIN_TOKEN_KEY);
@@ -23,27 +24,12 @@ export function setAdminToken(token: string | null) {
   else localStorage.removeItem(ADMIN_TOKEN_KEY);
 }
 
-/**
- * Base URL for all API requests.
- * - In local dev: empty (Vite proxy or same-origin) so `/api/...` hits the local backend.
- * - In production on Vercel: set `VITE_API_BASE_URL=https://your-backend.example.com`
- *   in Vercel project env vars so the frontend can reach the deployed backend.
- * Trailing slash is stripped so we can safely concatenate with paths that start with "/".
- */
-function normalizeBaseUrl(raw: string): string {
-  let v = (raw || "").trim().replace(/\/$/, "");
-  if (!v) return "";
-  // If user forgot the scheme (e.g. "api.example.com"), default to https://
-  if (!/^https?:\/\//i.test(v)) v = `https://${v}`;
-  return v;
+export function clearAdminTokenAndNotify() {
+  setAdminToken(null);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(ADMIN_AUTH_EXPIRED_EVENT));
+  }
 }
-// Compute API base URL correctly. If `VITE_API_BASE_URL` is provided use it,
-// otherwise when in dev mode default to localhost backend. Previous code had
-// an operator-precedence bug so DEV was being evaluated incorrectly.
-const rawBase = (import.meta as any).env?.VITE_API_BASE_URL;
-const API_BASE_URL: string = normalizeBaseUrl(
-  rawBase ? rawBase : ((import.meta as any).env?.DEV ? "http://localhost:4000" : "")
-);
 
 async function request<T>(path: string, init: RequestInit = {}, opts: { admin?: boolean } = {}): Promise<T> {
   const headers: Record<string, string> = {
@@ -54,13 +40,15 @@ async function request<T>(path: string, init: RequestInit = {}, opts: { admin?: 
     const t = getAdminToken();
     if (t) headers["x-admin-token"] = t;
   }
-  const url = path.startsWith("http") ? path : `${API_BASE_URL}${path}`;
-  const res = await fetch(url, {
+  const res = await fetch(path, {
     ...init,
     headers,
     credentials: "include" // Include cookies for session authentication
   });
   if (!res.ok) {
+    if (opts.admin && res.status === 401) {
+      clearAdminTokenAndNotify();
+    }
     let detail = "";
     try { detail = (await res.json()).error || ""; } catch {}
     throw new Error(`API ${res.status}: ${detail || res.statusText}`);
@@ -254,13 +242,11 @@ export const api = {
 export const adminApi = {
   login: (email: string, password: string) =>
     (async () => {
-      const url = `/api/admin/login`;
-      const body = `email=${encodeURIComponent(email)}&password=${encodeURIComponent(password)}`;
-      const res = await fetch(url.startsWith("http") ? url : `${API_BASE_URL}${url}`, {
+      const res = await fetch(`/api/admin/login`, {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body,
+        body: JSON.stringify({ email, password }),
       });
       if (!res.ok) {
         let detail = "";

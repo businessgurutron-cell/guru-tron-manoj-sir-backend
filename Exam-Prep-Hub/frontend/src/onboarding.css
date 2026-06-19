@@ -1,0 +1,88 @@
+/* Onboarding page styles using Gurtron theme tokens */
+.onboarding-root {
+  font-family: 'Nunito Sans', sans-serif;
+  min-height: 100vh;
+  overflow: hidden;
+  background: radial-gradient(1200px 600px at 10% 20%, rgba(255,255,255,0.02), transparent 20%), linear-gradient(160deg, #040718 0%, #0f1630 60%, #040718 100%);
+  color: #fff;
+}
+
+.onboarding-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.onboarding-card {
+  background: #0c1129;
+  border-radius: 24px;
+  padding: 28px;
+  box-shadow: 0 12px 40px rgba(4,7,24,0.6);
+  border: 1px solid rgba(238,179,43,0.06);
+}
+
+.onboarding-card--compact {
+  width: min(100%, 420px);
+}
+
+.logo-mark {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.card-title {
+  font-size: 22px;
+  font-weight: 800;
+  color: #fff;
+  margin-top: 6px;
+}
+
+.card-sub {
+  color: #8b95b0;
+  margin-top: 6px;
+}
+
+.onboarding-form .input-row {
+  margin-bottom: 14px;
+}
+
+.onboarding-form .input {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 56px;
+  padding: 0 14px;
+  border-radius: 12px;
+  background: #071028;
+  border: 1px solid rgba(255,255,255,0.03);
+}
+
+.onboarding-form input {
+  background: transparent;
+  border: 0;
+  outline: none;
+  color: #fff;
+  flex: 1;
+}
+
+.btn-signin {
+  width: 100%;
+  padding: 14px 18px;
+  border-radius: 14px;
+  background: #EEB32B;
+  color: #040718;
+  font-weight: 900;
+  box-shadow: 0 12px 30px rgba(238,179,43,0.18);
+}
+
+@media (max-width: 1024px) {
+  .onboarding-screen {
+    padding: 18px;
+  }
+}
