@@ -214,6 +214,11 @@ export interface UserProfile {
     validUntil?: string;       // ISO date
     razorpayPaymentId?: string;
   };
+
+  /** This user's own unique referral code (e.g. "GURU-MUKUL"). Server-generated. */
+  referralCode?: string;
+  /** Referral code that brought this user in (immutable once set). */
+  referredBy?: string;
 }
 
 export interface OnboardingExtras {
@@ -226,4 +231,6 @@ export interface OnboardingExtras {
   teacherInviteCode?: string;
   /** Optional password to set/update on the account. */
   password?: string;
+  /** Optional referral code the user was referred by. */
+  referredByCode?: string;
 }
