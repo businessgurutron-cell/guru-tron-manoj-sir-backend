@@ -17,3 +17,5 @@ out/
 pnpm-lock.yaml
 package-lock.json
 yarn.lock
+
+.git_disabled/

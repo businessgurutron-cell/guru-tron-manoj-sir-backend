@@ -15,12 +15,18 @@ const DEFAULT_DB = {
   questions: [],    // Question[] — global, managed by admin
   documents: [],    // Document[] — uploaded PDF metadata
   pdfPages: [],     // Raw PDF pages extracted when using the new raw parser
+  notes: [],        // Note[] — { id, classId, subjectId, chapterId, title, content, attachments, meta, createdAt }
+  tests: [],        // Test[] — { id, title, classId, targetTags, durationMinutes, questionIds, published, authorId }
   classes: [],      // ClassRoom[]
   memberships: [],  // Membership[]
   assignments: [],  // Assignment[]  — paper assigned to class
   topics: [],       // Topic[]       — { id, subject, classLevel?, examType?, name, createdAt }
   flashcards: [],   // Flashcard[]   — { id, subject, topic, classLevel?, examType?, question, answer, difficulty?, createdAt }
   pyps: [],         // PreviousYearPaper[] — { id, title, examType, year, subject?, durationMinutes?, questions[], createdAt }
+  referrals: [],    // Referral[] — { id, referrerId, referredUserId, referralCode, ... }
+  commissions: [],  // CommissionTransaction[] — { id, referrerId, buyerId, orderId, ... }
+  payouts: [],      // Payout[] — { id, userId, amount, transactionNote, paidAt }
+  studentRewards: [], // StudentReward[] — { id, userId, coins, premiumDays, reason, createdAt }
 };
 
 function ensureFile() {
@@ -384,5 +390,161 @@ export const jsonStorage = {
     const db = read();
     db.pyps = (db.pyps || []).filter((p) => p.id !== id);
     write(db);
+  },
+  // ----- Notes -----
+  async getNotes(query = {}) {
+    const db = read();
+    let list = db.notes || [];
+    if (query.classId) list = list.filter((n) => String(n.classId) === String(query.classId));
+    if (query.subjectId) list = list.filter((n) => String(n.subjectId) === String(query.subjectId));
+    if (query.chapterId) list = list.filter((n) => String(n.chapterId) === String(query.chapterId));
+    if (query.q) {
+      const q = String(query.q || "").toLowerCase();
+      list = list.filter((n) => (n.title || "").toLowerCase().includes(q) || (n.content || "").toLowerCase().includes(q));
+    }
+    return list;
+  },
+  async getNote(id) {
+    const db = read();
+    return (db.notes || []).find((n) => n.id === id) || null;
+  },
+  async addNote(note) {
+    const db = read();
+    const row = { ...(note || {}), createdAt: new Date().toISOString() };
+    db.notes = [row, ...(db.notes || [])];
+    write(db);
+    return row;
+  },
+  async updateNote(id, updates) {
+    const db = read();
+    const idx = (db.notes || []).findIndex((n) => n.id === id);
+    if (idx >= 0) {
+      db.notes[idx] = { ...db.notes[idx], ...updates };
+      write(db);
+      return db.notes[idx];
+    }
+    return null;
+  },
+  async deleteNote(id) {
+    const db = read();
+    db.notes = (db.notes || []).filter((n) => n.id !== id);
+    write(db);
+    return true;
+  },
+
+  // ----- Tests -----
+  async getTests(query = {}) {
+    const db = read();
+    let list = db.tests || [];
+    if (query.classId) list = list.filter((t) => String(t.classId) === String(query.classId));
+    if (query.published !== undefined) list = list.filter((t) => Boolean(t.published) === Boolean(query.published));
+    return list;
+  },
+  async getTest(id) {
+    const db = read();
+    return (db.tests || []).find((t) => t.id === id) || null;
+  },
+
+  // ----- Referrals & Commissions -----
+  async getProfileByReferralCode(code) {
+    const db = read();
+    const norm = String(code || "").trim().toLowerCase();
+    if (!norm) return null;
+    for (const [userId, profile] of Object.entries(db.users || {})) {
+      if ((profile.referralCode || "").toLowerCase() === norm) return { id: userId, ...profile };
+    }
+    return null;
+  },
+  async addReferral(r) {
+    const db = read();
+    const row = { id: r.id || `ref_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, ...r };
+    db.referrals = [row, ...(db.referrals || [])];
+    write(db);
+    return row;
+  },
+  async getReferralByReferredUser(userId) {
+    const db = read();
+    return (db.referrals || []).find((r) => r.referredUserId === userId) || null;
+  },
+  async getReferralsByReferrer(referrerId) {
+    const db = read();
+    return (db.referrals || []).filter((r) => r.referrerId === referrerId);
+  },
+  async getAllReferrals() {
+    const db = read();
+    return db.referrals || [];
+  },
+  async addCommission(c) {
+    const db = read();
+    const row = {
+      id: c.id || `com_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      updatedAt: new Date().toISOString(),
+      ...c,
+    };
+    db.commissions = [row, ...(db.commissions || [])];
+    write(db);
+    return row;
+  },
+  async getCommissionByOrderId(orderId) {
+    const db = read();
+    if (!orderId) return null;
+    return (db.commissions || []).find((c) => c.orderId === orderId) || null;
+  },
+  async getCommissionsByReferrer(referrerId) {
+    const db = read();
+    return (db.commissions || []).filter((c) => c.referrerId === referrerId);
+  },
+  async getAllCommissions() {
+    const db = read();
+    return db.commissions || [];
+  },
+  async updateCommission(id, updates) {
+    const db = read();
+    const idx = (db.commissions || []).findIndex((c) => c.id === id);
+    if (idx === -1) return null;
+    db.commissions[idx] = { ...db.commissions[idx], ...updates, id, updatedAt: new Date().toISOString() };
+    write(db);
+    return db.commissions[idx];
+  },
+  async addPayout(p) {
+    const db = read();
+    const row = {
+      id: p.id || `pay_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      paidAt: p.paidAt || new Date().toISOString(),
+      ...p,
+    };
+    db.payouts = [row, ...(db.payouts || [])];
+    write(db);
+    return row;
+  },
+  async getPayoutsByUser(userId) {
+    const db = read();
+    return (db.payouts || []).filter((p) => p.userId === userId);
+  },
+  async getAllPayouts() {
+    const db = read();
+    return db.payouts || [];
+  },
+  async addStudentReward(r) {
+    const db = read();
+    const row = {
+      id: r.id || `rew_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      createdAt: r.createdAt || new Date().toISOString(),
+      ...r,
+    };
+    db.studentRewards = [row, ...(db.studentRewards || [])];
+    write(db);
+    return row;
+  },
+  async getStudentRewardsByUser(userId) {
+    const db = read();
+    return (db.studentRewards || []).filter((r) => r.userId === userId);
+  },
+  async addTest(test) {
+    const db = read();
+    const row = { ...(test || {}), createdAt: new Date().toISOString() };
+    db.tests = [row, ...(db.tests || [])];
+    write(db);
+    return row;
   },
 };

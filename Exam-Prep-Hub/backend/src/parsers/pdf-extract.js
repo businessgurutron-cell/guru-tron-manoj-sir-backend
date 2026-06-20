@@ -187,8 +187,9 @@ export async function extractPdfPages(buffer) {
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
 
-    // Detect images on this page (heuristic: any operator that's an image paint)
+    // Detect images on this page and extract their bounding boxes
     let hasImage = false;
+    let imageBounds = [];
     try {
       const ops = await page.getOperatorList();
       const fnSet = new Set([
@@ -196,8 +197,67 @@ export async function extractPdfPages(buffer) {
         pdf.OPS?.paintInlineImageXObject,
         pdf.OPS?.paintImageMaskXObject,
       ]);
-      for (const fn of ops.fnArray) {
-        if (fnSet.has(fn)) { hasImage = true; break; }
+
+      function findMatrix(value) {
+        if (Array.isArray(value)) {
+          if (value.length === 6 && value.every((n) => typeof n === "number")) {
+            return value;
+          }
+          for (const item of value) {
+            const found = findMatrix(item);
+            if (found) return found;
+          }
+          return null;
+        }
+        if (value && typeof value === "object") {
+          if (Array.isArray(value.matrix) && value.matrix.length === 6 && value.matrix.every((n) => typeof n === "number")) {
+            return value.matrix;
+          }
+          if (Array.isArray(value.transform) && value.transform.length === 6 && value.transform.every((n) => typeof n === "number")) {
+            return value.transform;
+          }
+          for (const key of Object.keys(value)) {
+            const found = findMatrix(value[key]);
+            if (found) return found;
+          }
+        }
+        return null;
+      }
+
+      function getMatrixFromArgs(args) {
+        return findMatrix(args);
+      }
+
+      function matrixToBounds(matrix) {
+        const [a, b, c, d, e, f] = matrix;
+        const points = [
+          [e, f],
+          [a + e, b + f],
+          [c + e, d + f],
+          [a + c + e, b + d + f],
+        ];
+        const xs = points.map((p) => p[0]);
+        const ys = points.map((p) => p[1]);
+        return {
+          x0: Math.min(...xs),
+          y0: Math.min(...ys),
+          x1: Math.max(...xs),
+          y1: Math.max(...ys),
+        };
+      }
+
+      // Scan operator list for image paint operations
+      for (let j = 0; j < ops.fnArray.length; j++) {
+        const fn = ops.fnArray[j];
+        if (fnSet.has(fn)) {
+          hasImage = true;
+          const args = ops.argsArray[j];
+          const matrix = getMatrixFromArgs(args);
+          if (matrix) {
+            const bounds = matrixToBounds(matrix);
+            imageBounds.push(bounds);
+          }
+        }
       }
     } catch {
       // operator list not critical — skip
@@ -206,7 +266,12 @@ export async function extractPdfPages(buffer) {
     const tc = await page.getTextContent({ includeMarkedContent: false });
     const text = repairMathNotation(normaliseChars(itemsToText(tc.items)));
 
-    pages.push({ pageNumber: i, text, hasImage });
+    pages.push({ 
+      pageNumber: i, 
+      text, 
+      hasImage,
+      imageBounds: imageBounds.length > 0 ? imageBounds : null,
+    });
     page.cleanup?.();
   }
 

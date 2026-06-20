@@ -1,23 +1,44 @@
 import dotenv from "dotenv";
-dotenv.config();
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.join(__dirname, "../.env") });
 
 import express from "express";
 import cors from "cors";
 import session from "express-session";
 import crypto from "crypto";
 import multer from "multer";
-import path from "path";
 import Groq from "groq-sdk";
+import { supabase } from "./supabase.js";
 import authRoutes from "./routes/auth.js";
 import { jsonStorage } from "./storage/json.js";
 import { supabaseStorage } from "./storage/supabase.js";
 import { buildAdminRouter } from "./admin-routes.js";
+import { buildReferralRouter } from "./referral-routes.js";
+import { createCommissionForOrder, ensureReferralCode, recordReferral } from "./referral.js";
 import { getPageImageBytes } from "./storage/pdf-storage.js";
 import { saveCaptureImage, CAPTURES_LOCAL_DIR } from "./storage/capture-storage.js";
 import { hashPassword } from "./password.js";
+import { answerWithGemini } from "./parsers/gemini.js";
+import fs from "fs";
 
 const PORT = parseInt(process.env.PORT || "4000", 10);
-const storage = process.env.STORAGE === "supabase" ? supabaseStorage : jsonStorage;
+// Prefer Supabase when explicitly configured AND the client initialized;
+// otherwise fall back to local JSON storage so the server remains operational.
+let storage;
+if (process.env.STORAGE === "supabase") {
+  if (supabase) {
+    storage = supabaseStorage;
+  } else {
+    console.warn("[startup] STORAGE=supabase but Supabase client failed to initialize — falling back to json storage.");
+    storage = jsonStorage;
+  }
+} else {
+  storage = jsonStorage;
+}
 
 const app = express();
 // CORS: allow comma-separated origins via FRONTEND_URL or CLIENT_ORIGIN.
@@ -37,14 +58,34 @@ const allowedOrigins = (process.env.FRONTEND_URL || process.env.CLIENT_ORIGIN ||
   .concat(defaultLocalOrigins);
 app.use(cors({
   origin: (origin, cb) => {
-    // Allow same-origin / curl (no origin header) and any explicitly whitelisted origin.
-    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    // Allow same-origin / curl (no origin header)
+    if (!origin) return cb(null, true);
+    // Allow any localhost origin (different dev ports)
+    try {
+      const u = new URL(origin);
+      if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return cb(null, true);
+    } catch (e) {}
+    // Allow explicit whitelist
+    if (allowedOrigins.includes(origin)) return cb(null, true);
     // Reject CORS properly (don't throw error which becomes 500)
     cb(null, false);
   },
   credentials: true,
 }));
-app.use(express.json({ limit: "100mb" }));
+// Ensure preflight allows the custom admin token header used by the frontend
+// (x-admin-token) so browsers can send it in multipart/form-data uploads.
+app.options('*', cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
+    try { const u = new URL(origin); if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return cb(null, true); } catch (e) {}
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    cb(null, false);
+  },
+  credentials: true,
+  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','x-admin-token','Authorization'],
+}));
+app.use(express.json({ limit: "5mb" }));
 
 // Session middleware. When frontend and backend live on different origins
 // (Vercel ↔ Render), cookies must be SameSite=None and Secure=true so the
@@ -58,6 +99,8 @@ app.use(session({
   cookie: {
     secure: isProd,
     httpOnly: true,
+    // Use SameSite=None in production for cross-site deployments; use lax in
+    // local development so browsers accept the cookie without requiring Secure.
     sameSite: isProd ? "none" : "lax",
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
   },
@@ -88,6 +131,124 @@ function getCurrentUser(req, res) {
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, storage: process.env.STORAGE || "json" });
+});
+
+// --- Learning routes: notes, tests, rankings, chat ---
+app.get("/api/notes", async (req, res) => {
+  try {
+    const notes = await storage.getNotes(req.query || {});
+    res.json({ notes });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get("/api/notes/:id", async (req, res) => {
+  try {
+    const note = await storage.getNote(req.params.id);
+    if (!note) return res.status(404).json({ error: "Note not found" });
+    res.json({ note });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post("/api/notes", requireAuth, async (req, res) => {
+  try {
+    const saved = await storage.addNote(req.body || {});
+    res.json({ note: saved });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get("/api/tests", async (req, res) => {
+  try {
+    const tests = await storage.getTests(req.query || {});
+    res.json({ tests });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get("/api/tests/:id", async (req, res) => {
+  try {
+    const test = await storage.getTest(req.params.id);
+    if (!test) return res.status(404).json({ error: "Test not found" });
+    res.json({ test });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post("/api/tests", requireAuth, async (req, res) => {
+  try {
+    const saved = await storage.addTest(req.body || {});
+    res.json({ test: saved });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// Simple leaderboard aggregation from scores stored under `attempts`
+app.get("/api/rankings", async (req, res) => {
+  try {
+    const scope = req.query.scope || "national"; // class|city|state|national
+    const limit = parseInt(req.query.limit || "50", 10);
+    const db = JSON.parse(fs.readFileSync(path.join(process.cwd(), "data", "db.json"), "utf-8"));
+    const attempts = db.attempts || {};
+    const profiles = db.users || {};
+
+    // Flatten attempts into array of { userId, score }
+    const flat = Object.entries(attempts).flatMap(([userId, list]) => (list || []).map((a) => ({ userId, score: Number(a.score || 0) })));
+    const byUser = {};
+    for (const a of flat) {
+      byUser[a.userId] = Math.max(byUser[a.userId] || 0, a.score || 0);
+    }
+
+    // Build list of users with profile metadata
+    let users = Object.entries(byUser).map(([userId, score]) => ({ userId, score, profile: profiles[userId] || null }));
+
+    // Apply scope filters
+    const classId = req.query.classId;
+    const city = req.query.city;
+    const stateQ = req.query.state;
+
+    if (scope === "class" && classId) {
+      users = users.filter((u) => u.profile && String(u.profile.classLevel || u.profile.classId || "") === String(classId));
+    } else if (scope === "city" && city) {
+      users = users.filter((u) => u.profile && String(u.profile.city || "").toLowerCase() === String(city).toLowerCase());
+    } else if (scope === "state" && stateQ) {
+      users = users.filter((u) => u.profile && String(u.profile.state || "").toLowerCase() === String(stateQ).toLowerCase());
+    }
+
+    users.sort((a, b) => b.score - a.score);
+    const limited = users.slice(0, limit).map((u, i) => ({ rank: i + 1, userId: u.userId, score: u.score, name: u.profile?.name || null }));
+    res.json({ rankings: limited });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// Simple AI chat that searches notes and questions for context and returns a stubbed reply.
+app.post("/api/chat", async (req, res) => {
+  try {
+    const message = String((req.body || {}).message || "").trim();
+    if (!message) return res.status(400).json({ error: "Message is required" });
+    const db = JSON.parse(fs.readFileSync(path.join(process.cwd(), "data", "db.json"), "utf-8"));
+    const notes = db.notes || [];
+    const questions = db.questions || [];
+    // naive context matching: look for keywords in notes/questions
+    const q = message.toLowerCase();
+    const matchedNotes = notes.filter((n) => (n.title || "").toLowerCase().includes(q) || (n.content || "").toLowerCase().includes(q)).slice(0, 5);
+    const matchedQs = questions.filter((qq) => (qq.text || "").toLowerCase().includes(q)).slice(0, 5);
+    // Respond with a simple templated reply and source ids
+    const reply = `I found ${matchedNotes.length} notes and ${matchedQs.length} questions that might help. Ask me to summarise any.`;
+    const sources = { notes: matchedNotes.map((n) => n.id), questions: matchedQs.map((q) => q.id) };
+    res.json({ reply, sources });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
 });
 
 // Public: read-only topics catalogue. The admin manages topics via the admin
@@ -144,6 +305,9 @@ app.get("/api/documents/:id/pages/:n.png", async (req, res) => {
 // Admin routes (login, stats, questions CRUD, PDF parse)
 app.use("/api/admin", buildAdminRouter(storage));
 
+// Referral & Commission routes (user-facing)
+app.use("/api/referral", buildReferralRouter(storage));
+
 // --- Profile ---
 function sanitizeProfile(profile) {
   if (!profile) return profile;
@@ -168,6 +332,9 @@ app.put("/api/profile", requireAuth, async (req, res) => {
   try {
     const incoming = { ...(req.body || {}) };
     const rawPassword = incoming.password;
+    // Referral code the user is claiming they were referred by (optional).
+    const referredByCode = incoming.referredByCode;
+    delete incoming.referredByCode;
     // Never persist the raw password in the profile.
     delete incoming.password;
     // Don't let a client clobber the stored hash directly.
@@ -195,7 +362,33 @@ app.put("/api/profile", requireAuth, async (req, res) => {
       passwordHash: incoming.passwordHash || existing.passwordHash,
     };
 
-    const saved = await storage.saveProfile(user.id.toString(), merged);
+    let saved = await storage.saveProfile(user.id.toString(), merged);
+
+    // Ensure the user has their own unique referral code.
+    saved = await ensureReferralCode(storage, user.id.toString(), saved);
+
+    // If they entered a referral code, record the (permanent) relationship.
+    // Best-effort: invalid/self/duplicate codes are silently ignored so they
+    // never block onboarding.
+    if (referredByCode) {
+      try {
+        const result = await recordReferral(storage, {
+          referredUserId: user.id.toString(),
+          referredProfile: saved,
+          code: referredByCode,
+          source: "code",
+        });
+        if (result.ok && result.referral) {
+          saved = await storage.saveProfile(user.id.toString(), {
+            ...saved,
+            referredBy: result.referral.referralCode,
+          });
+        }
+      } catch (err) {
+        console.warn("[referral] recordReferral failed:", err?.message || err);
+      }
+    }
+
     res.json({ profile: sanitizeProfile(saved) });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
@@ -220,6 +413,67 @@ app.post("/api/attempts", requireAuth, async (req, res) => {
   try {
     const saved = await storage.addAttempt(user.id.toString(), req.body);
     res.json({ attempt: saved });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// Start a test attempt (creates a started attempt row)
+app.post("/api/tests/:id/start", requireAuth, async (req, res) => {
+  const user = getCurrentUser(req, res);
+  if (!user) return;
+  try {
+    const test = await storage.getTest(req.params.id);
+    if (!test) return res.status(404).json({ error: "Test not found" });
+    const attempt = {
+      id: `a_${Date.now()}`,
+      quizId: test.id,
+      title: test.title || "Quiz",
+      startedAt: new Date().toISOString(),
+      status: "started",
+      answers: {},
+    };
+    await storage.addAttempt(user.id.toString(), attempt);
+    res.json({ attempt });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// Submit a finished test attempt (compute score and persist)
+app.post("/api/tests/:id/submit", requireAuth, async (req, res) => {
+  const user = getCurrentUser(req, res);
+  if (!user) return;
+  try {
+    const test = await storage.getTest(req.params.id);
+    if (!test) return res.status(404).json({ error: "Test not found" });
+    const payload = req.body || {};
+    const answers = payload.answers || {};
+    const allQuestions = (await storage.getQuestions()) || [];
+    const qmap = Object.fromEntries(allQuestions.map((q) => [q.id, q]));
+    let score = 0;
+    const total = Array.isArray(test.questionIds) ? test.questionIds.length : Object.keys(answers).length;
+    for (const [qid, sel] of Object.entries(answers)) {
+      const q = qmap[qid];
+      if (!q) continue;
+      if (Number(sel) === Number(q.correctIndex)) score++;
+    }
+
+    const attempt = {
+      id: payload.id || `a_${Date.now()}`,
+      quizId: test.id,
+      title: test.title || "Quiz",
+      startedAt: payload.startedAt || null,
+      finishedAt: new Date().toISOString(),
+      status: "finished",
+      answers,
+      score,
+      totalQuestions: total,
+      timeSpent: payload.timeSpent || null,
+      date: new Date().toISOString(),
+    };
+    await storage.addAttempt(user.id.toString(), attempt);
+    res.json({ attempt });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
@@ -920,6 +1174,20 @@ app.post("/api/payments/verify", requireAuth, async (req, res) => {
       },
     };
     await storage.saveProfile(user.id.toString(), updated);
+
+    // Referral commission: if this buyer was referred by a teacher, create a
+    // PENDING commission (10%). Best-effort — never block the payment response.
+    try {
+      const purchaseAmountInr = (Number(plan.amount) || 0) / 100; // paise -> INR
+      await createCommissionForOrder(storage, {
+        buyerId: user.id.toString(),
+        orderId: razorpay_order_id,
+        purchaseAmount: purchaseAmountInr,
+      });
+    } catch (err) {
+      console.warn("[referral] commission creation failed:", err?.message || err);
+    }
+
     res.json({ ok: true, subscription: updated.subscription });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
@@ -992,6 +1260,56 @@ Keep responses concise (1-2 paragraphs) unless asked for more detail.`;
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`[gurutron-server] listening on http://localhost:${PORT} (storage=${process.env.STORAGE || "json"})`);
+app.post("/api/ai/dpp-chat", requireAuth, async (req, res) => {
+  const user = getCurrentUser(req, res);
+  if (!user) return;
+
+  try {
+    const { message, conversationHistory, subject, chapter } = req.body;
+    if (!message || typeof message !== "string") {
+      return res.status(400).json({ error: "Message is required" });
+    }
+
+    const systemPrompt = `You are a real-time Gemini tutor for DPP practice.
+Help the student solve the current chapter question, show the reasoning, and keep the answer practical.
+If the user asks for only the final answer, provide it succinctly.
+If they ask for a hint, give a small hint first.
+Subject context: ${subject || "Unknown"}
+Chapter context: ${chapter || "Unknown"}`;
+
+    const response = await answerWithGemini({
+      message,
+      conversationHistory: Array.isArray(conversationHistory) ? conversationHistory : [],
+      modelName: process.env.GEMINI_DPP_CHAT_MODEL || process.env.GEMINI_DPP_MODEL || process.env.GEMINI_MODEL || "gemini-3-flash-preview",
+      systemInstruction: systemPrompt,
+    });
+
+    res.json({ response });
+  } catch (e) {
+    console.error("[ai/dpp-chat] Gemini API error:", e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
 });
+
+function startServer(port, attempt = 0) {
+  const MAX_ATTEMPTS = 10;
+  const server = app.listen(port, () => {
+    // Show the actual storage adapter in use (may differ from STORAGE env if fallback occurred)
+    const storageName = storage === supabaseStorage ? "supabase" : "json";
+    console.log(`[gurutron-server] listening on http://localhost:${port} (storage=${storageName})`);
+  });
+
+  server.on("error", (err) => {
+    if (err && err.code === "EADDRINUSE" && attempt < MAX_ATTEMPTS) {
+      const next = port + 1;
+      console.warn(`[gurutron-server] port ${port} in use, trying ${next} (attempt ${attempt + 1}/${MAX_ATTEMPTS})`);
+      // Try next port after a short delay to avoid rapid recursion
+      setTimeout(() => startServer(next, attempt + 1), 150);
+    } else {
+      console.error("[gurutron-server] server error:", err);
+      process.exit(1);
+    }
+  });
+}
+
+startServer(PORT);

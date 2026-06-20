@@ -3,10 +3,12 @@ import express from "express";
 import { OAuth2Client } from "google-auth-library";
 import { jsonStorage } from "../storage/json.js";
 import { supabaseStorage } from "../storage/supabase.js";
+import { supabase } from "../supabase.js";
 import { hashPassword, verifyPassword } from "../password.js";
+import { generateReferralCode } from "../referral.js";
 
 const router = express.Router();
-const storage = process.env.STORAGE === "supabase" ? supabaseStorage : jsonStorage;
+const storage = process.env.STORAGE === "supabase" && supabase ? supabaseStorage : jsonStorage;
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 function sendAuthError(res, message, status = 400) {
@@ -20,6 +22,14 @@ async function ensureProfile(userId, email, googleData = null) {
   const name = googleData?.name || email.split("@")[0] || "Student";
   const picture = googleData?.picture || null;
 
+  // Every user gets a unique referral code at creation time.
+  let referralCode = "";
+  try {
+    referralCode = await generateReferralCode(storage, name);
+  } catch (e) {
+    console.warn("[referral] code generation failed at signup:", e?.message || e);
+  }
+
   const profile = {
     name,
     email,
@@ -31,6 +41,7 @@ async function ensureProfile(userId, email, googleData = null) {
     totalPoints: 0,
     badges: [],
     rank: 0,
+    referralCode,
     isOnboarded: false,
   };
 
@@ -203,6 +214,43 @@ router.post("/logout", (req, res) => {
     res.json({ message: "Logged out successfully" });
   });
 });
+
+// Dev-only: quickly set session for a seeded user (useful in local development).
+// Usage: POST /auth/dev-login { userId } or { email }
+if (process.env.NODE_ENV !== "production") {
+  router.post("/dev-login", async (req, res) => {
+    try {
+      console.log("[dev-login] payload:", req.body);
+      const { userId, email } = req.body || {};
+      let profile = null;
+      let sessionUserId = null;
+      if (userId) {
+        profile = await storage.getProfile(userId);
+        sessionUserId = userId;
+      }
+      if (!profile && email) {
+        const found = await storage.getProfileByEmail(String(email).trim().toLowerCase());
+        if (found) {
+          sessionUserId = found.id || found.userId || null;
+          if (sessionUserId) profile = await storage.getProfile(sessionUserId);
+        }
+      }
+      if (!profile) return res.status(404).json({ error: "User not found" });
+      console.log("[dev-login] found profile for sessionId=", sessionUserId, "profileKeys=", Object.keys(profile || {}));
+      req.session.user = {
+        id: sessionUserId || userId,
+        email: profile.email || email || null,
+        name: profile.name || null,
+        picture: profile.picture || null,
+        role: profile.role || "student",
+      };
+      res.json(req.session.user);
+    } catch (error) {
+      console.error("[dev-login] error:", error && error.stack ? error.stack : error);
+      res.status(500).json({ error: String(error?.message || error) });
+    }
+  });
+}
 
 router.patch("/users/:id/role", async (req, res) => {
   try {

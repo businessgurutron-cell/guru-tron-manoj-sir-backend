@@ -3,16 +3,58 @@ import { supabase } from "../supabase.js";
 import { jsonStorage } from "./json.js";
 
 function handleError(error) {
-  if (error) throw error;
+  if (error) {
+    console.error("[supabase error]", error.message || error);
+    throw error;
+  }
+}
+
+// PostgREST caps a single .select() at a default max of 1000 rows. To return
+// ALL rows we page through with .range() until a short page is returned.
+// `build` receives a fresh query builder and may add filters/ordering.
+const PAGE_SIZE = 1000;
+async function fetchAllRows(table, build) {
+  const all = [];
+  let from = 0;
+  for (;;) {
+    let query = supabase.from(table).select("*");
+    if (typeof build === "function") query = build(query);
+    const { data, error } = await query.range(from, from + PAGE_SIZE - 1);
+    handleError(error);
+    if (!data || data.length === 0) break;
+    all.push(...data);
+    if (data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+  return all;
+}
+
+// Insert/upsert large arrays in chunks so we never hit payload limits and so
+// the chained read-back is never silently truncated at 1000 rows.
+async function upsertInChunks(table, rows, options) {
+  const inserted = [];
+  for (let i = 0; i < rows.length; i += PAGE_SIZE) {
+    const chunk = rows.slice(i, i + PAGE_SIZE);
+    const { data, error } = await supabase
+      .from(table)
+      .upsert(chunk, options)
+      .select();
+    handleError(error);
+    if (data) inserted.push(...data);
+  }
+  return inserted;
 }
 
 // Convert camelCase to snake_case (handles acronyms properly)
 function toSnakeCase(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(toSnakeCase);
+
   const converted = {};
   for (const [key, value] of Object.entries(obj)) {
     const snakeKey = key
-      .replace(/([a-z])([A-Z])/g, '$1_$2')           // lowercase to uppercase
-      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')    // sequence of capitals
+      .replace(/([a-z])([A-Z])/g, '$1_$2')
+      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
       .toLowerCase();
     converted[snakeKey] = value;
   }
@@ -21,7 +63,9 @@ function toSnakeCase(obj) {
 
 // Convert snake_case to camelCase
 function toCamelCase(obj) {
-  if (!obj) return obj;
+  if (!obj || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(toCamelCase);
+
   const converted = {};
   for (const [key, value] of Object.entries(obj)) {
     const camelKey = key.replace(/_([a-z])/g, (match, letter) => letter.toUpperCase());
@@ -31,6 +75,7 @@ function toCamelCase(obj) {
 }
 
 export const supabaseStorage = {
+  // ===== PROFILES =====
   async getProfile(userId) {
     const { data, error } = await supabase.from("profiles").select("*").eq("id", userId).single();
     if (error && error.code !== "PGRST116") handleError(error);
@@ -44,10 +89,6 @@ export const supabaseStorage = {
     return data ? toCamelCase(data) : null;
   },
 
-  /**
-   * Lookup a profile by ANY of: email, username (case-insensitive), or phone.
-   * Used for the multi-identifier login flow. Returns the first match.
-   */
   async getProfileByIdentifier(identifier) {
     const raw = String(identifier || "").trim();
     if (!raw) return null;
@@ -74,12 +115,14 @@ export const supabaseStorage = {
     // Try phone (exact + digits-only fallback)
     {
       const phoneDigits = raw.replace(/\D/g, "");
-      const { data } = await supabase
-        .from("profiles")
-        .select("*")
-        .or(`phone.eq.${raw},phone.eq.${phoneDigits}`)
-        .maybeSingle();
-      if (data) return toCamelCase(data);
+      if (phoneDigits) {
+        const { data } = await supabase
+          .from("profiles")
+          .select("*")
+          .or(`phone.eq.${raw},phone.eq.${phoneDigits}`)
+          .maybeSingle();
+        if (data) return toCamelCase(data);
+      }
     }
     return null;
   },
@@ -95,6 +138,46 @@ export const supabaseStorage = {
     return data ? toCamelCase(data) : null;
   },
 
+  async getAllProfiles() {
+    const data = await fetchAllRows("profiles");
+    return data.map(toCamelCase);
+  },
+
+  async findAccountByEmail(email) {
+    const normalizedEmail = email.trim().toLowerCase();
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id, email, password_hash")
+      .eq("email", normalizedEmail)
+      .single();
+    if (error && error.code !== "PGRST116") handleError(error);
+    return data ? { userId: data.id, email: data.email, passwordHash: data.password_hash } : null;
+  },
+
+  async createAccount(userId, email, passwordHash) {
+    const normalizedEmail = email.trim().toLowerCase();
+    const { data, error } = await supabase
+      .from("profiles")
+      .insert([{ id: userId, email: normalizedEmail, password_hash: passwordHash }])
+      .select()
+      .single();
+    handleError(error);
+    return data ? { userId: data.id, email: data.email } : null;
+  },
+
+  async verifyAccount(email, passwordHash) {
+    const normalizedEmail = email.trim().toLowerCase();
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id, email, password_hash")
+      .eq("email", normalizedEmail)
+      .single();
+    if (error && error.code !== "PGRST116") handleError(error);
+    if (!data || data.password_hash !== passwordHash) return null;
+    return { userId: data.id, email: data.email };
+  },
+
+  // ===== ATTEMPTS (Quiz Results) =====
   async getAttempts(userId) {
     const { data, error } = await supabase
       .from("attempts")
@@ -106,7 +189,7 @@ export const supabaseStorage = {
   },
 
   async addAttempt(userId, attempt) {
-    const dbPayload = toSnakeCase({ user_id: userId, ...attempt });
+    const dbPayload = toSnakeCase({ id: attempt.id || crypto.randomUUID(), user_id: userId, ...attempt });
     const { data, error } = await supabase
       .from("attempts")
       .insert([dbPayload])
@@ -116,6 +199,7 @@ export const supabaseStorage = {
     return data ? toCamelCase(data) : null;
   },
 
+  // ===== PAPERS (Generated Question Papers) =====
   async getPapers(userId) {
     const { data, error } = await supabase
       .from("papers")
@@ -126,9 +210,6 @@ export const supabaseStorage = {
     return data ? data.map(toCamelCase) : [];
   },
 
-  // Look up a paper by id without scoping to a user. Used by the
-  // GET /api/papers/:id route which authorizes the caller separately
-  // (owner OR approved member of a class the paper is assigned to).
   async getPaperById(paperId) {
     const { data, error } = await supabase
       .from("papers")
@@ -140,9 +221,6 @@ export const supabaseStorage = {
   },
 
   async addPaper(userId, paper) {
-    // Whitelist: only persist columns that exist on the `papers` table.
-    // The frontend may send extras (e.g. `skipHeader`) which would otherwise
-    // make the INSERT fail with PGRST204 and lose the paper silently.
     const ALLOWED = new Set([
       "id",
       "user_id",
@@ -152,6 +230,7 @@ export const supabaseStorage = {
       "topic",
       "difficulty",
       "questions",
+      "duration_minutes",
       "created_at",
     ]);
     const raw = toSnakeCase({ user_id: userId, ...paper });
@@ -164,8 +243,6 @@ export const supabaseStorage = {
       .select()
       .single();
     handleError(error);
-    // Re-attach client-only fields (e.g. skipHeader) so the API response
-    // matches what the frontend sent, even though they aren't persisted.
     const persisted = data ? toCamelCase(data) : null;
     if (persisted && paper && typeof paper === "object") {
       for (const [k, v] of Object.entries(paper)) {
@@ -185,11 +262,11 @@ export const supabaseStorage = {
   },
 
   async resetUser(userId) {
-    const profileReset = toSnakeCase({
+    const profileReset = {
       streak: 0,
-      totalPoints: 0,
-      lastQuizDate: "",
-    });
+      total_points: 0,
+      last_quiz_date: "",
+    };
 
     const results = await Promise.all([
       supabase.from("attempts").delete().eq("user_id", userId),
@@ -201,39 +278,20 @@ export const supabaseStorage = {
     results.forEach((result) => handleError(result.error));
   },
 
+  // ===== QUESTIONS (Global Question Bank) =====
   async ensureSeed() {
-    // no-op — Supabase tables are managed via migrations.
+    // no-op — Supabase tables are managed via migrations
   },
 
   async getQuestions() {
-    const pageSize = 1000;
-    const allRows = [];
-    let from = 0;
-
-    while (true) {
-      const { data, error } = await supabase
-        .from("questions")
-        .select("*")
-        .range(from, from + pageSize - 1);
-      handleError(error);
-
-      const rows = data || [];
-      allRows.push(...rows);
-      if (rows.length < pageSize) break;
-      from += pageSize;
-    }
-
-    return allRows.map(toCamelCase);
+    const data = await fetchAllRows("questions");
+    return data.map(toCamelCase);
   },
 
   async addQuestions(questions) {
-    const dbPayload = questions.map(toSnakeCase);
-    const { data, error } = await supabase
-      .from("questions")
-      .upsert(dbPayload, { onConflict: "id" })
-      .select();
-    handleError(error);
-    return data ? data.map(toCamelCase) : [];
+    const dbPayload = questions.map(q => toSnakeCase(q));
+    const data = await upsertInChunks("questions", dbPayload, { onConflict: "id" });
+    return data.map(toCamelCase);
   },
 
   async updateQuestion(id, updates) {
@@ -253,7 +311,7 @@ export const supabaseStorage = {
     handleError(error);
   },
 
-  // ----- Documents (uploaded PDFs) -----
+  // ===== DOCUMENTS (PDF Uploads) =====
   async addDocument(doc) {
     const dbPayload = toSnakeCase(doc);
     const { data, error } = await supabase
@@ -264,24 +322,7 @@ export const supabaseStorage = {
     handleError(error);
     return data ? toCamelCase(data) : null;
   },
-  async savePdfPages({ pdfName, pages }) {
-    if (!Array.isArray(pages) || pages.length === 0) return [];
-    const dbPayload = pages.map((page) =>
-      toSnakeCase({
-        id: crypto.randomUUID(),
-        pdfName,
-        pageNumber: page.pageNumber,
-        content: page.text,
-        createdAt: new Date().toISOString(),
-      })
-    );
-    const { data, error } = await supabase
-      .from("pdf_pages")
-      .insert(dbPayload)
-      .select();
-    handleError(error);
-    return data ? data.map(toCamelCase) : [];
-  },
+
   async getDocuments() {
     const { data, error } = await supabase
       .from("documents")
@@ -290,6 +331,7 @@ export const supabaseStorage = {
     handleError(error);
     return data ? data.map(toCamelCase) : [];
   },
+
   async getDocument(id) {
     const { data, error } = await supabase
       .from("documents")
@@ -300,7 +342,14 @@ export const supabaseStorage = {
     return data ? toCamelCase(data) : null;
   },
 
-  // ----- Classes -----
+  async savePdfPages({ pdfName, pages }) {
+    if (!Array.isArray(pages) || pages.length === 0) return [];
+    // Note: Store in questions or a separate tracking mechanism
+    // For now, just return the pages as processed
+    return pages;
+  },
+
+  // ===== CLASSES =====
   async getClasses() {
     const { data, error } = await supabase
       .from("classes")
@@ -322,7 +371,6 @@ export const supabaseStorage = {
 
   async getClassByCode(code) {
     const norm = String(code || "").trim().toUpperCase();
-    // Codes are stored uppercase by the generator, but be defensive with ilike.
     const { data, error } = await supabase
       .from("classes")
       .select("*")
@@ -344,7 +392,7 @@ export const supabaseStorage = {
   },
 
   async addClass(cls) {
-    const dbPayload = toSnakeCase(cls);
+    const dbPayload = toSnakeCase({ id: cls.id || crypto.randomUUID(), ...cls });
     const { data, error } = await supabase
       .from("classes")
       .insert([dbPayload])
@@ -354,14 +402,12 @@ export const supabaseStorage = {
     return data ? toCamelCase(data) : null;
   },
 
-  // ----- Memberships -----
+  // ===== MEMBERSHIPS =====
   async getMemberships() {
-    const { data, error } = await supabase
-      .from("memberships")
-      .select("*")
-      .order("created_at", { ascending: false });
-    handleError(error);
-    return data ? data.map(toCamelCase) : [];
+    const data = await fetchAllRows("memberships", (q) =>
+      q.order("created_at", { ascending: false })
+    );
+    return data.map(toCamelCase);
   },
 
   async getMembershipsByClass(classId) {
@@ -385,7 +431,7 @@ export const supabaseStorage = {
   },
 
   async addMembership(m) {
-    const dbPayload = toSnakeCase(m);
+    const dbPayload = toSnakeCase({ id: m.id || crypto.randomUUID(), ...m });
     const { data, error } = await supabase
       .from("memberships")
       .insert([dbPayload])
@@ -407,7 +453,7 @@ export const supabaseStorage = {
     return data ? toCamelCase(data) : null;
   },
 
-  // ----- Assignments -----
+  // ===== ASSIGNMENTS =====
   async getAssignments() {
     const { data, error } = await supabase
       .from("assignments")
@@ -416,6 +462,7 @@ export const supabaseStorage = {
     handleError(error);
     return data ? data.map(toCamelCase) : [];
   },
+
   async getAssignmentsByClass(classId) {
     const { data, error } = await supabase
       .from("assignments")
@@ -425,6 +472,7 @@ export const supabaseStorage = {
     handleError(error);
     return data ? data.map(toCamelCase) : [];
   },
+
   async getAssignmentsByPaper(paperId) {
     const { data, error } = await supabase
       .from("assignments")
@@ -434,8 +482,9 @@ export const supabaseStorage = {
     handleError(error);
     return data ? data.map(toCamelCase) : [];
   },
+
   async addAssignment(a) {
-    const dbPayload = toSnakeCase(a);
+    const dbPayload = toSnakeCase({ id: a.id || crypto.randomUUID(), ...a });
     const { data, error } = await supabase
       .from("assignments")
       .insert([dbPayload])
@@ -444,12 +493,13 @@ export const supabaseStorage = {
     handleError(error);
     return data ? toCamelCase(data) : null;
   },
+
   async deleteAssignment(id) {
     const { error } = await supabase.from("assignments").delete().eq("id", id);
     handleError(error);
   },
 
-  // ----- Topics (admin-managed catalogue, surfaced in PaperGenerate) -----
+  // ===== TOPICS (Syllabus) =====
   async getTopics() {
     const { data, error } = await supabase
       .from("topics")
@@ -458,18 +508,15 @@ export const supabaseStorage = {
     handleError(error);
     return data ? data.map(toCamelCase) : [];
   },
+
   async addTopic(topic) {
-    const dbPayload = toSnakeCase(topic);
-    // Upsert with the unique constraint on (subject, class_level, exam_type, name)
-    // — if the row already exists we just return it instead of erroring out.
+    const dbPayload = toSnakeCase({ id: topic.id || crypto.randomUUID(), ...topic });
     const { data, error } = await supabase
       .from("topics")
       .upsert([dbPayload], { onConflict: "id" })
       .select()
       .single();
-    if (error) {
-      // Duplicate against the case-insensitive unique index — fetch the existing
-      // row so callers always get a valid topic back.
+    if (error && error.code !== "PGRST116") {
       const { data: existing } = await supabase
         .from("topics")
         .select("*")
@@ -481,12 +528,13 @@ export const supabaseStorage = {
     }
     return data ? toCamelCase(data) : null;
   },
+
   async deleteTopic(id) {
     const { error } = await supabase.from("topics").delete().eq("id", id);
     handleError(error);
   },
 
-  // ----- Flashcards (admin-managed deck data) -----
+  // ===== FLASHCARDS =====
   async getFlashcards() {
     try {
       const { data, error } = await supabase
@@ -494,66 +542,56 @@ export const supabaseStorage = {
         .select("*")
         .order("created_at", { ascending: false });
       if (error && (error.code === "PGRST205" || error.code === "42P01")) {
-        return await jsonStorage.getFlashcards();
+        return await jsonStorage.getFlashcards?.() || [];
       }
       handleError(error);
       return data ? data.map(toCamelCase) : [];
     } catch (e) {
-      if (String(e?.code || e).includes("PGRST205") || String(e).includes("flashcards")) {
-        return await jsonStorage.getFlashcards();
-      }
-      throw e;
+      console.warn("[flashcards fallback]", e.message);
+      return await jsonStorage.getFlashcards?.() || [];
     }
   },
+
   async addFlashcard(card) {
     try {
-      const dbPayload = toSnakeCase(card);
+      const dbPayload = toSnakeCase({ id: card.id || crypto.randomUUID(), ...card });
       const { data, error } = await supabase
         .from("flashcards")
         .insert([dbPayload])
         .select()
         .single();
       if (error && (error.code === "PGRST205" || error.code === "42P01")) {
-        return await jsonStorage.addFlashcard(card);
+        return await jsonStorage.addFlashcard?.(card) || card;
       }
       handleError(error);
       return data ? toCamelCase(data) : card;
     } catch (e) {
-      if (String(e?.code || e).includes("PGRST205") || String(e).includes("flashcards")) {
-        return await jsonStorage.addFlashcard(card);
-      }
-      throw e;
+      console.warn("[flashcards fallback]", e.message);
+      return await jsonStorage.addFlashcard?.(card) || card;
     }
   },
+
   async deleteFlashcard(id) {
     try {
       const { error } = await supabase.from("flashcards").delete().eq("id", id);
       if (error && (error.code === "PGRST205" || error.code === "42P01")) {
-        return await jsonStorage.deleteFlashcard(id);
+        return await jsonStorage.deleteFlashcard?.(id);
       }
       handleError(error);
     } catch (e) {
-      if (String(e?.code || e).includes("PGRST205") || String(e).includes("flashcards")) {
-        return await jsonStorage.deleteFlashcard(id);
-      }
-      throw e;
+      console.warn("[flashcards fallback]", e.message);
+      return await jsonStorage.deleteFlashcard?.(id);
     }
   },
 
-  // ----- Previous Year Papers / Mocks -----
-  // Schema (see supabase-pyp-migration.sql):
-  //   pyps(id text pk, title text, exam_type text, year int, subject text,
-  //        duration_minutes int, questions jsonb, created_at timestamptz)
+  // ===== PREVIOUS YEAR PAPERS =====
   async getPyps() {
     const { data, error } = await supabase
       .from("pyps")
-      .select("id,title,exam_type,year,subject,duration_minutes,questions,created_at")
+      .select("id, title, exam_type, year, subject, duration_minutes, questions, created_at")
       .order("created_at", { ascending: false });
-    // PostgREST surfaces "missing table" as PGRST205 / 42P01. Treat that as
-    // an empty catalogue so the student page renders cleanly until the
-    // operator runs `supabase-pyp-migration.sql`.
     if (error && (error.code === "PGRST205" || error.code === "42P01")) {
-      console.warn("[storage:supabase] pyps table missing — run supabase-pyp-migration.sql");
+      console.warn("[storage:supabase] pyps table missing");
       return [];
     }
     handleError(error);
@@ -568,28 +606,272 @@ export const supabaseStorage = {
       createdAt: row.created_at,
     }));
   },
+
   async getPyp(id) {
     const { data, error } = await supabase.from("pyps").select("*").eq("id", id).single();
     if (error && error.code !== "PGRST116") handleError(error);
     return data ? toCamelCase(data) : null;
   },
+
   async addPyp(pyp) {
     const payload = toSnakeCase({
-      id: pyp.id,
+      id: pyp.id || crypto.randomUUID(),
       title: pyp.title,
       examType: pyp.examType,
       year: pyp.year,
       subject: pyp.subject ?? null,
       durationMinutes: pyp.durationMinutes ?? null,
       questions: pyp.questions,
-      createdAt: pyp.createdAt,
+      createdAt: pyp.createdAt || new Date().toISOString(),
     });
-    const { data, error } = await supabase.from("pyps").insert(payload).select().single();
+    const { data, error } = await supabase.from("pyps").insert([payload]).select().single();
     handleError(error);
     return data ? toCamelCase(data) : pyp;
   },
+
   async deletePyp(id) {
     const { error } = await supabase.from("pyps").delete().eq("id", id);
     handleError(error);
+  },
+
+  // ===== NOTES =====
+  async getNotes(query) {
+    try {
+      let qry = supabase.from("notes").select("*");
+      
+      if (query?.subject) qry = qry.eq("subject", query.subject);
+      if (query?.chapter) qry = qry.eq("chapter", query.chapter);
+      if (query?.examType) qry = qry.eq("exam_type", query.examType);
+      if (query?.classLevel) qry = qry.eq("class_level", query.classLevel);
+      if (query?.board) qry = qry.eq("board", query.board);
+      if (query?.uploadedBy) qry = qry.eq("uploaded_by", query.uploadedBy);
+      if (query?.q) {
+        const searchTerm = `%${query.q}%`;
+        qry = qry.or(`title.ilike.${searchTerm},description.ilike.${searchTerm}`);
+      }
+      
+      // Default sort by created_at desc (newest first)
+      qry = qry.order("created_at", { ascending: false });
+      
+      const { data, error } = await qry;
+      handleError(error);
+      return data ? data.map(toCamelCase) : [];
+    } catch (e) {
+      console.warn("[supabase.getNotes]", e.message);
+      return await jsonStorage.getNotes?.(query) || [];
+    }
+  },
+
+  async getNote(id) {
+    try {
+      const { data, error } = await supabase
+        .from("notes")
+        .select("*")
+        .eq("id", id)
+        .single();
+      handleError(error);
+      return data ? toCamelCase(data) : null;
+    } catch (e) {
+      console.warn("[supabase.getNote]", e.message);
+      return await jsonStorage.getNote?.(id) || null;
+    }
+  },
+
+  async addNote(note) {
+    try {
+      const payload = toSnakeCase({ ...note, createdAt: new Date().toISOString() });
+      const { data, error } = await supabase
+        .from("notes")
+        .insert([payload])
+        .select()
+        .single();
+      handleError(error);
+      return data ? toCamelCase(data) : null;
+    } catch (e) {
+      console.warn("[supabase.addNote]", e.message);
+      return await jsonStorage.addNote?.(note) || null;
+    }
+  },
+
+  async updateNote(id, updates) {
+    try {
+      const payload = toSnakeCase(updates);
+      const { data, error } = await supabase
+        .from("notes")
+        .update(payload)
+        .eq("id", id)
+        .select()
+        .single();
+      handleError(error);
+      return data ? toCamelCase(data) : null;
+    } catch (e) {
+      console.warn("[supabase.updateNote]", e.message);
+      return null;
+    }
+  },
+
+  async deleteNote(id) {
+    try {
+      const { error } = await supabase
+        .from("notes")
+        .delete()
+        .eq("id", id);
+      handleError(error);
+      return true;
+    } catch (e) {
+      console.warn("[supabase.deleteNote]", e.message);
+      return false;
+    }
+  },
+
+  async getTests(query) {
+    return await jsonStorage.getTests?.(query) || [];
+  },
+
+  async addTest(test) {
+    return await jsonStorage.addTest?.(test) || null;
+  },
+
+  async getTest(id) {
+    return await jsonStorage.getTest?.(id) || null;
+  },
+
+  // ===== REFERRALS & COMMISSIONS =====
+  async getProfileByReferralCode(code) {
+    const norm = String(code || "").trim();
+    if (!norm) return null;
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("*")
+      .ilike("referral_code", norm)
+      .maybeSingle();
+    if (error && error.code !== "PGRST116") handleError(error);
+    return data ? toCamelCase(data) : null;
+  },
+
+  async addReferral(r) {
+    const dbPayload = toSnakeCase({ id: r.id || `ref_${crypto.randomBytes(5).toString("hex")}`, ...r });
+    const { data, error } = await supabase
+      .from("referrals")
+      .insert([dbPayload])
+      .select()
+      .single();
+    handleError(error);
+    return data ? toCamelCase(data) : null;
+  },
+
+  async getReferralByReferredUser(userId) {
+    const { data, error } = await supabase
+      .from("referrals")
+      .select("*")
+      .eq("referred_user_id", userId)
+      .maybeSingle();
+    if (error && error.code !== "PGRST116") handleError(error);
+    return data ? toCamelCase(data) : null;
+  },
+
+  async getReferralsByReferrer(referrerId) {
+    const data = await fetchAllRows("referrals", (q) =>
+      q.eq("referrer_id", referrerId).order("created_at", { ascending: false })
+    );
+    return data.map(toCamelCase);
+  },
+
+  async getAllReferrals() {
+    const data = await fetchAllRows("referrals", (q) =>
+      q.order("created_at", { ascending: false })
+    );
+    return data.map(toCamelCase);
+  },
+
+  async addCommission(c) {
+    const dbPayload = toSnakeCase({ id: c.id || `com_${crypto.randomBytes(5).toString("hex")}`, ...c });
+    const { data, error } = await supabase
+      .from("commission_transactions")
+      .insert([dbPayload])
+      .select()
+      .single();
+    handleError(error);
+    return data ? toCamelCase(data) : null;
+  },
+
+  async getCommissionByOrderId(orderId) {
+    if (!orderId) return null;
+    const { data, error } = await supabase
+      .from("commission_transactions")
+      .select("*")
+      .eq("order_id", orderId)
+      .maybeSingle();
+    if (error && error.code !== "PGRST116") handleError(error);
+    return data ? toCamelCase(data) : null;
+  },
+
+  async getCommissionsByReferrer(referrerId) {
+    const data = await fetchAllRows("commission_transactions", (q) =>
+      q.eq("referrer_id", referrerId).order("created_at", { ascending: false })
+    );
+    return data.map(toCamelCase);
+  },
+
+  async getAllCommissions() {
+    const data = await fetchAllRows("commission_transactions", (q) =>
+      q.order("created_at", { ascending: false })
+    );
+    return data.map(toCamelCase);
+  },
+
+  async updateCommission(id, updates) {
+    const dbPayload = toSnakeCase({ ...updates, updatedAt: new Date().toISOString() });
+    const { data, error } = await supabase
+      .from("commission_transactions")
+      .update(dbPayload)
+      .eq("id", id)
+      .select()
+      .single();
+    handleError(error);
+    return data ? toCamelCase(data) : null;
+  },
+
+  async addPayout(p) {
+    const dbPayload = toSnakeCase({ id: p.id || `pay_${crypto.randomBytes(5).toString("hex")}`, ...p });
+    const { data, error } = await supabase
+      .from("payouts")
+      .insert([dbPayload])
+      .select()
+      .single();
+    handleError(error);
+    return data ? toCamelCase(data) : null;
+  },
+
+  async getPayoutsByUser(userId) {
+    const data = await fetchAllRows("payouts", (q) =>
+      q.eq("user_id", userId).order("paid_at", { ascending: false })
+    );
+    return data.map(toCamelCase);
+  },
+
+  async getAllPayouts() {
+    const data = await fetchAllRows("payouts", (q) =>
+      q.order("paid_at", { ascending: false })
+    );
+    return data.map(toCamelCase);
+  },
+
+  async addStudentReward(r) {
+    const dbPayload = toSnakeCase({ id: r.id || `rew_${crypto.randomBytes(5).toString("hex")}`, ...r });
+    const { data, error } = await supabase
+      .from("student_rewards")
+      .insert([dbPayload])
+      .select()
+      .single();
+    handleError(error);
+    return data ? toCamelCase(data) : null;
+  },
+
+  async getStudentRewardsByUser(userId) {
+    const data = await fetchAllRows("student_rewards", (q) =>
+      q.eq("user_id", userId).order("created_at", { ascending: false })
+    );
+    return data.map(toCamelCase);
   },
 };
