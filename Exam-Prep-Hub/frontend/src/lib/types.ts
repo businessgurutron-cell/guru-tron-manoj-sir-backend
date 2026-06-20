@@ -1,4 +1,4 @@
-export type ExamType = "NEET" | "JEE" | "BOARD";
+export type ExamType = "NEET" | "JEE" | "BITS" | "BOARD";
 export type Subject = "Physics" | "Chemistry" | "Biology" | "Mathematics";
 export type Difficulty = "Easy" | "Moderate" | "Hard";
 export type Role = "student" | "teacher";
@@ -221,6 +221,7 @@ export interface OnboardingExtras {
   phone?: string;
   schoolName?: string;
   classLevel?: string;
+  skipClassJoin?: boolean;
   /** Invite-only code required when registering as a teacher. */
   teacherInviteCode?: string;
   /** Optional password to set/update on the account. */

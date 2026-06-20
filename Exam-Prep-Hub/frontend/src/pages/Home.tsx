@@ -17,6 +17,7 @@ export default function Home() {
     const hasClass = myMemberships.some(
       (m) => m.status === "approved" || m.status === "pending"
     );
+    const showJoinClassCta = !profile.skipClassJoin && !hasClass;
 
     // Daily-updates feed. Right now we derive it from assignments the
     // student has via approved class memberships (teacher uploaded a paper /
@@ -80,7 +81,7 @@ export default function Home() {
       <div>
         {/* Hero */}
         <div className="relative overflow-hidden px-5 pt-16 pb-7 text-white"
-          style={{ background: "linear-gradient(135deg,#1e3a8a,#2563eb)" }}>
+          style={{ background: "radial-gradient(1200px 600px at 10% 20%, rgba(255,255,255,0.02), transparent 20%), linear-gradient(160deg, #040718 0%, #0f1630 60%, #040718 100%)" }}>
           <div className="absolute -top-14 -right-10 w-52 h-52 rounded-full" style={{ background: "rgba(255,255,255,0.06)" }} />
           <div className="absolute -bottom-8 left-8 w-32 h-32 rounded-full" style={{ background: "rgba(255,255,255,0.04)" }} />
           <div className="flex items-start justify-between mb-5 relative">
@@ -118,23 +119,23 @@ export default function Home() {
         <div className="px-4 pt-5">
           <div className="flex gap-2.5 mb-6">
             <button
-              onClick={() => nav("/quiz")}
+              onClick={() => nav("/pyp?section=chat")}
               className="flex-[1.4] flex items-center justify-center gap-2 py-3.5 rounded-2xl text-white font-bold shadow-md active:opacity-90"
               style={{ background: colors.primary }}
             >
-              <Icon name="play-circle" size={22} color="#fff" /> Start Quiz
+              <Icon name="message-circle" size={22} color="#fff" /> AI Chat
             </button>
             <button
-              onClick={() => nav("/pyp")}
+              onClick={() => nav("/dpp")}
               className="flex-1 flex items-center justify-center gap-2 py-3.5 rounded-2xl border bg-white font-semibold text-[13px]"
               style={{ borderColor: colors.border, color: colors.foreground }}
             >
-              <Icon name="award" size={20} color="#d97706" /> Prev. Papers
+              <Icon name="file-text" size={20} color="#d97706" /> DPP
             </button>
           </div>
 
           {/* ---------- Join Class CTA (only for students without a class) ---------- */}
-          {!hasClass && (
+          {showJoinClassCta && (
             <button
               onClick={() => nav("/class/join")}
               className="w-full text-left rounded-2xl p-3.5 mb-6 border shadow-sm active:opacity-90 flex items-center gap-3"
