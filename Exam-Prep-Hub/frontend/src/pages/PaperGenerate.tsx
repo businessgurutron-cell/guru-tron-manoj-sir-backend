@@ -34,7 +34,7 @@ type Step = "exam" | "class" | "subject" | "topic" | "mode" | "details";
 
 const STEPS: Step[] = ["exam", "class", "subject", "topic", "mode", "details"];
 const ALL_EXAMS: ExamType[] = ["NEET", "JEE", "BITS", "BOARD"];
-const ALL_CLASSES = ["9", "10", "11", "12"];
+const ALL_CLASSES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
 const QUESTION_TYPES: QuestionType[] = [
   "MCQ",
   "Assertion-Reason",
@@ -101,7 +101,30 @@ export default function PaperGenerate() {
     })();
   }, []);
 
-  const subjects = examType ? subjectsFor(examType) : [];
+  const subjects = useMemo(() => {
+    if (!examType) return [] as string[];
+    const base = subjectsFor(examType);
+    const examLower = examType.toLowerCase();
+    // Pull any subjects that actually exist in the question pool for this
+    // exam + class (so primary-class subjects like English/Hindi/EVS/GK show up).
+    const fromPool = new Set<string>();
+    for (const q of pool) {
+      const ets = (q.examType || []).map((e) => String(e).toLowerCase());
+      if (!ets.includes(examLower)) continue;
+      if (classLevel && q.classLevel !== classLevel) continue;
+      if (q.subject) fromPool.add(q.subject);
+    }
+    // If the pool has subjects for this combo, prefer them; otherwise fall back
+    // to the static science/maths list (for 9-12 boards with no data yet).
+    if (fromPool.size > 0) {
+      const ordered = [...fromPool].sort();
+      // keep any base subject that also has data first, then the rest
+      const withData = ordered.filter((s) => base.includes(s));
+      const extra = ordered.filter((s) => !base.includes(s));
+      return [...withData, ...extra];
+    }
+    return base;
+  }, [examType, classLevel, pool]);
 
   // Topic cards for the selected subject + class + exam combo, with counts
   // pulled from the actual question pool so teachers can see at a glance
@@ -114,7 +137,9 @@ export default function PaperGenerate() {
     const countMap = new Map<string, number>();
     for (const q of pool) {
       if ((q.subject || "").toLowerCase() !== subjLower) continue;
-      if (classLevel && q.classLevel && q.classLevel !== classLevel) continue;
+      // Strict class match: when a class is chosen, ONLY include questions
+      // tagged with that exact class. Untagged questions must not leak in.
+      if (classLevel && q.classLevel !== classLevel) continue;
       if (examLower) {
         const ets = (q.examType || []).map((e) => String(e).toLowerCase());
         if (!ets.includes(examLower)) continue;
@@ -147,7 +172,7 @@ export default function PaperGenerate() {
     const examLower = examType.toLowerCase();
     return pool.filter((q) => {
       if ((q.subject || "").toLowerCase() !== subjLower) return false;
-      if (classLevel && q.classLevel && q.classLevel !== classLevel) return false;
+      if (classLevel && q.classLevel !== classLevel) return false;
       const ets = (q.examType || []).map((e) => String(e).toLowerCase());
       if (!ets.includes(examLower)) return false;
       if (topic && topic !== "All" && (q.topic || "").trim() !== topic) return false;

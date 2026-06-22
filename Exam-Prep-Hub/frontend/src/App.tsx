@@ -11,6 +11,7 @@ import ClassJoin from "@/pages/ClassJoin";
 import Home from "@/pages/Home";
 import Quiz from "@/pages/Quiz";
 import QuizSession from "@/pages/QuizSession";
+import MockTest from "@/pages/MockTest";
 import Papers from "@/pages/Papers";
 import PaperGenerate from "@/pages/PaperGenerate";
 import PaperCapture from "@/pages/PaperCapture";
@@ -21,6 +22,7 @@ import Notes from "@/pages/Notes";
 import Progress from "@/pages/Progress";
 import Profile from "@/pages/Profile";
 import Referral from "@/pages/Referral";
+import QuestionBank from "@/pages/QuestionBank";
 import AdminLogin from "@/pages/admin/AdminLogin";
 import AdminShell from "@/pages/admin/AdminShell";
 import AdminDashboard from "@/pages/admin/AdminDashboard";
@@ -28,8 +30,11 @@ import AdminUpload from "@/pages/admin/AdminUpload";
 import AdminQuestions from "@/pages/admin/AdminQuestions";
 import AdminQuestionForm from "@/pages/admin/AdminQuestionForm";
 import AdminFlashcards from "@/pages/admin/AdminFlashcards";
+import AdminNotes from "@/pages/admin/AdminNotes";
 import AdminAddPYPForm from "@/pages/admin/AdminAddPYPForm";
 import AdminReferral from "@/pages/admin/AdminReferral";
+import AdminSubscriptions from "@/pages/admin/AdminSubscriptions";
+import AdminRevenue from "@/pages/admin/AdminRevenue";
 import Landing from "@/pages/Landing";
 import Teachers from "@/pages/Teachers";
 import Schools from "@/pages/Schools";
@@ -122,13 +127,19 @@ export default function App() {
       <Route path="/admin/login" element={<AdminLogin />} />
       <Route path="/admin" element={<AdminShell />}>
         <Route index element={<AdminDashboard />} />
+        <Route path="subscriptions" element={<AdminSubscriptions />} />
+        <Route path="revenue" element={<AdminRevenue />} />
         <Route path="upload" element={<AdminUpload />} />
         <Route path="questions" element={<AdminQuestions />} />
         <Route path="questions/new" element={<AdminQuestionForm />} />
         <Route path="questions/:id" element={<AdminQuestionForm />} />
         <Route path="flashcards" element={<AdminFlashcards />} />
+        <Route path="notes" element={<AdminNotes />} />
         <Route path="pyp" element={<AdminAddPYPForm />} />
         <Route path="referral" element={<AdminReferral />} />
+        {/* Any unknown /admin/* path falls back to the dashboard so the panel
+            never renders a blank content area. */}
+        <Route path="*" element={<Navigate to="/admin" replace />} />
       </Route>
     </>
   );
@@ -142,6 +153,7 @@ export default function App() {
         <Route path="/schools" element={<Schools />} />
         <Route path="/exams" element={<Exams />} />
         <Route path="/onboarding" element={<Onboarding />} />
+        <Route path="/signup" element={<Onboarding />} />
         <Route path="/" element={<Landing />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
@@ -153,6 +165,7 @@ export default function App() {
       <Routes>
         {adminRoutes}
         <Route path="/onboarding" element={<Onboarding />} />
+        <Route path="/signup" element={<Onboarding />} />
         <Route path="*" element={<Navigate to="/onboarding" replace />} />
       </Routes>
     );
@@ -170,6 +183,7 @@ export default function App() {
         <Route path="/" element={<Shell role={role}><Home /></Shell>} />
         <Route path="/quiz" element={<Shell role={role}><Quiz /></Shell>} />
         <Route path="/quiz/:id" element={<QuizSession />} />
+        <Route path="/mock/:id" element={<MockTest />} />
         {/* /papers is the teacher's generated paper bank. Students arriving
             here (e.g. via stale links) get redirected to /pyp. */}
         <Route
@@ -184,6 +198,7 @@ export default function App() {
         <Route path="/pyp" element={<Shell role={role}><PreviousYearPapers /></Shell>} />
         <Route path="/progress" element={<Shell role={role}><Progress /></Shell>} />
         <Route path="/referral" element={<Shell role={role}><Referral /></Shell>} />
+        <Route path="/question-bank" element={<Shell role={role}><QuestionBank /></Shell>} />
         <Route path="/profile" element={<Shell role={role}><Profile /></Shell>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
